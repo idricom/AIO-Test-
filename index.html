@@ -1,0 +1,461 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AIO - AI Чат</title>
+    <script src="https://cdn.jsdelivr.net/npm/react@18.2.0/umd/react.production.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@babel/standalone/babel.min.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'San Francisco', 'Segoe UI', Roboto, sans-serif;
+        }
+        .glass-effect {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .hover-scale {
+            transition: all 0.2s ease-in-out;
+        }
+        .hover-scale:hover {
+            transform: scale(1.05);
+            cursor: pointer;
+        }
+        .sidebar {
+            transition: transform 0.3s ease-in-out;
+        }
+        .toast {
+            transition: opacity 0.5s ease-in-out, transform 0.5s ease-in-out;
+        }
+        .animate-type {
+            display: inline-block;
+            white-space: pre-wrap;
+            overflow: hidden;
+            animation: typing 0.02s steps(1, end);
+        }
+        @keyframes typing {
+            from { width: 0; }
+            to { width: 100%; }
+        }
+    </style>
+</head>
+<body class="bg-gradient-to-br from-gray-900 to-blue-900 text-white min-h-screen">
+    <div id="root"></div>
+    <div id="toast-container" class="fixed bottom-4 right-4 space-y-2"></div>
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        // Firebase Configuration
+        const firebaseConfig = {
+            // INSERT YOUR FIREBASE CONFIG HERE
+            apiKey: "YOUR_FIREBASE_API_KEY",
+            authDomain: "YOUR_FIREBASE_AUTH_DOMAIN",
+            projectId: "YOUR_FIREBASE_PROJECT_ID",
+            storageBucket: "YOUR_FIREBASE_STORAGE_BUCKET",
+            messagingSenderId: "YOUR_FIREBASE_MESSAGING_SENDER_ID",
+            appId: "YOUR_FIREBASE_APP_ID"
+        };
+        firebase.initializeApp(firebaseConfig);
+        const auth = firebase.auth();
+
+        // Toast Notification Component
+        const Toast = ({ message, onClose }) => {
+            useEffect(() => {
+                const timer = setTimeout(onClose, 3000);
+                return () => clearTimeout(timer);
+            }, [onClose]);
+            return (
+                <div className="toast glass-effect p-3 rounded-lg text-sm">
+                    {message}
+                </div>
+            );
+        };
+
+        // Main App Component
+        const App = () => {
+            const [messages, setMessages] = useState([]);
+            const [input, setInput] = useState('');
+            const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+            const [isAuthenticated, setIsAuthenticated] = useState(false);
+            const [user, setUser] = useState(null);
+            const [theme, setTheme] = useState('system');
+            const [history, setHistory] = useState([]);
+            const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+            const [temperature, setTemperature] = useState(0.7);
+            const [toasts, setToasts] = useState([]);
+            const messagesEndRef = useRef(null);
+
+            // Scroll to bottom
+            const scrollToBottom = () => {
+                messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+            };
+
+            useEffect(() => {
+                scrollToBottom();
+            }, [messages]);
+
+            // Firebase Auth State
+            useEffect(() => {
+                const unsubscribe = auth.onAuthStateChanged((user) => {
+                    if (user) {
+                        setIsAuthenticated(true);
+                        setUser({
+                            email: user.email,
+                            avatar: user.photoURL || 'https://via.placeholder.com/40'
+                        });
+                        localStorage.setItem('user', JSON.stringify(user));
+                    } else {
+                        setIsAuthenticated(false);
+                        setUser(null);
+                        localStorage.removeItem('user');
+                    }
+                });
+                return () => unsubscribe();
+            }, []);
+
+            // Load from localStorage
+            useEffect(() => {
+                const savedTheme = localStorage.getItem('theme') || 'system';
+                const savedHistory = JSON.parse(localStorage.getItem('chatHistory')) || [];
+                setTheme(savedTheme);
+                setHistory(savedHistory);
+            }, []);
+
+            // Save theme to localStorage
+            useEffect(() => {
+                localStorage.setItem('theme', theme);
+                document.body.className = `bg-gradient-to-br ${theme === 'dark' ? 'from-gray-900 to-blue-900 text-white' : 'from-white to-gray-100 text-black'}`;
+            }, [theme]);
+
+            // Show Toast
+            const showToast = (message) => {
+                const id = Date.now();
+                setToasts([...toasts, { id, message }]);
+                setTimeout(() => setToasts(toasts => toasts.filter(t => t.id !== id)), 3000);
+            };
+
+            // Handle API request to Mistral with typing animation
+            const sendMessage = async (text, isRetry = false, editIndex = null) => {
+                const newMessage = { role: 'user', content: text };
+                const updatedMessages = isRetry ? [...messages] : editIndex !== null ? 
+                    [...messages.slice(0, editIndex), newMessage, ...messages.slice(editIndex + 1)] : 
+                    [...messages, newMessage];
+                
+                setMessages([...updatedMessages, { role: 'assistant', content: '', isTyping: true }]);
+                setInput('');
+
+                try {
+                    const response = await axios.post(
+                        'https://api.mistral.ai/v1/chat/completions',
+                        {
+                            model: 'mistral-large',
+                            messages: updatedMessages,
+                            temperature: temperature,
+                            stream: true
+                        },
+                        {
+                            headers: {
+                                // INSERT YOUR MISTRAL API KEY HERE
+                                'Authorization': 'Bearer SXdxzadaDapFyw70U5h4sbAAeWexhFXj',
+                                'Content-Type': 'application/json'
+                            }
+                        }
+                    );
+
+                    // Simulate streaming with typing effect
+                    let assistantMessage = '';
+                    const stream = response.data; // Simplified streaming
+                    assistantMessage = stream.choices[0].message.content;
+                    
+                    // Simulate typing
+                    const chars = assistantMessage.split('');
+                    let typed = '';
+                    for (let i = 0; i < chars.length; i++) {
+                        await new Promise(resolve => setTimeout(resolve, 20));
+                        typed += chars[i];
+                        setMessages([...updatedMessages, { role: 'assistant', content: typed, isTyping: true }]);
+                    }
+                    
+                    setMessages([...updatedMessages, { role: 'assistant', content: assistantMessage, isTyping: false }]);
+                    
+                    // Save to history
+                    const newChat = { id: Date.now(), title: text.slice(0, 30), messages: [...updatedMessages, { role: 'assistant', content: assistantMessage }] };
+                    const updatedHistory = [...history, newChat];
+                    setHistory(updatedHistory);
+                    localStorage.setItem('chatHistory', JSON.stringify(updatedHistory));
+                } catch (error) {
+                    console.error('API Error:', error);
+                    setMessages([...updatedMessages, { role: 'assistant', content: 'Ошибка: Не удалось подключиться к ИИ' }]);
+                    showToast('Ошибка API');
+                }
+            };
+
+            // Handle form submission
+            const handleSubmit = (e) => {
+                e.preventDefault();
+                if (input.trim()) sendMessage(input);
+            };
+
+            // Handle message actions
+            const handleRetry = (index) => {
+                sendMessage(messages[index].content, true);
+                showToast('Повтор запроса');
+            };
+
+            const handleEdit = (index) => {
+                setInput(messages[index].content);
+                sendMessage(messages[index].content, false, index);
+                showToast('Редактирование сообщения');
+            };
+
+            const handleCopy = (text) => {
+                navigator.clipboard.writeText(text);
+                showToast('Скопировано в буфер обмена');
+            };
+
+            const handleShare = (text) => {
+                navigator.share?.({ text }) || showToast('Функция "Поделиться" не поддерживается');
+            };
+
+            // Authentication handlers
+            const handleGoogleLogin = () => {
+                const provider = new firebase.auth.GoogleAuthProvider();
+                auth.signInWithPopup(provider)
+                    .then(() => showToast('Вход через Google успешен'))
+                    .catch(error => showToast('Ошибка входа: ' + error.message));
+            };
+
+            const handleYandexLogin = () => {
+                showToast('Вход через Яндекс пока не поддерживается');
+            };
+
+            const handleEmailLogin = () => {
+                const email = prompt('Введите email:');
+                const password = prompt('Введите пароль:');
+                if (email && password) {
+                    auth.signInWithEmailAndPassword(email, password)
+                        .then(() => showToast('Вход успешен'))
+                        .catch(error => showToast('Ошибка входа: ' + error.message));
+                }
+            };
+
+            const handleEmailSignup = () => {
+                const email = prompt('Введите email:');
+                const password = prompt('Введите пароль:');
+                if (email && password) {
+                    auth.createUserWithEmailAndPassword(email, password)
+                        .then(() => showToast('Регистрация успешна'))
+                        .catch(error => showToast('Ошибка регистрации: ' + error.message));
+                }
+            };
+
+            const handleLogout = () => {
+                auth.signOut();
+                showToast('Вы вышли из аккаунта');
+            };
+
+            // History handlers
+            const handleNewChat = () => {
+                setMessages([]);
+                setIsSidebarOpen(false);
+                showToast('Новый чат создан');
+            };
+
+            const handleRenameChat = (id, newTitle) => {
+                const updatedHistory = history.map(chat => 
+                    chat.id === id ? { ...chat, title: newTitle } : chat
+                );
+                setHistory(updatedHistory);
+                localStorage.setItem('chatHistory', JSON.stringify(updatedHistory));
+                showToast('Чат переименован');
+            };
+
+            const handleDeleteChat = (id) => {
+                const updatedHistory = history.filter(chat => chat.id !== id);
+                setHistory(updatedHistory);
+                localStorage.setItem('chatHistory', JSON.stringify(updatedHistory));
+                showToast('Чат удалён');
+            };
+
+            return (
+                <div className="flex h-screen overflow-hidden">
+                    {/* Sidebar */}
+                    <div className={`sidebar fixed inset-y-0 left-0 w-64 glass-effect transform ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'} md:relative md:translate-x-0 transition-transform duration-300 z-20`}>
+                        <div className="p-4">
+                            <button onClick={() => setIsSidebarOpen(false)} className="md:hidden mb-4">✕</button>
+                            <button onClick={handleNewChat} className="w-full glass-effect p-2 mb-4 rounded hover-scale">Новый чат</button>
+                            <h2 className="text-lg font-semibold">История</h2>
+                            <div className="mt-2">
+                                {history.map(chat => (
+                                    <div key={chat.id} className="flex justify-between items-center p-2 hover:bg-gray-700/50 rounded">
+                                        <span onClick={() => {setMessages(chat.messages); setIsSidebarOpen(false);}} className="hover-scale">{chat.title}</span>
+                                        <div className="relative group">
+                                            <button className="text-gray-400">⋯</button>
+                                            <div className="absolute hidden group-hover:block bg-gray-800 p-2 rounded">
+                                                <button onClick={() => handleRenameChat(chat.id, prompt('Новое название:', chat.title))} className="block w-full text-left">Переименовать</button>
+                                                <button onClick={() => handleDeleteChat(chat.id)} className="block w-full text-left">Удалить</button>
+                                                <button onClick={() => handleShare(chat.title)} className="block w-full text-left">Поделиться</button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Main Content */}
+                    <div className="flex-1 flex flex-col">
+                        {/* Header */}
+                        <header className="glass-effect p-4 flex justify-between items-center">
+                            <button onClick={() => setIsSidebarOpen(true)} className="md:hidden">☰</button>
+                            <h1 className="text-xl font-bold">AIO</h1>
+                            <div className="flex items-center space-x-4">
+                                {isAuthenticated ? (
+                                    <div className="relative group">
+                                        <img src={user.avatar} alt="Аватар" className="w-10 h-10 rounded-full hover-scale" />
+                                        <div className="absolute hidden group-hover:block bg-gray-800 p-2 rounded right-0">
+                                            <div>{user.email}</div>
+                                            <button onClick={() => setIsSettingsOpen(true)}>Настройки</button>
+                                            <a href="/premium">Премиум</a>
+                                            <a href="mailto:support@aio.com">Связаться с нами</a>
+                                            <button onClick={handleLogout}>Выйти</button>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <>
+                                        <div className="relative group">
+                                            <button className="glass-effect p-2 rounded hover-scale">Войти</button>
+                                            <div className="absolute hidden group-hover:block bg-gray-800 p-2 rounded right-0">
+                                                <button onClick={handleGoogleLogin}>Google</button>
+                                                <button onClick={handleYandexLogin}>Яндекс</button>
+                                                <button onClick={handleEmailLogin}>Email/Пароль</button>
+                                            </div>
+                                        </div>
+                                        <button onClick={handleEmailSignup} className="glass-effect p-2 rounded hover-scale">Регистрация</button>
+                                    </>
+                                )}
+                            </div>
+                        </header>
+
+                        {/* Chat Area */}
+                        <div className="flex-1 overflow-y-auto p-4">
+                            {messages.map((msg, index) => (
+                                <div key={index} className={`mb-4 p-4 rounded-lg ${msg.role === 'user' ? 'bg-blue-500/20' : 'glass-effect'}`}>
+                                    <div className={msg.isTyping ? 'animate-type' : ''}>{msg.content}</div>
+                                    <div className="flex space-x-2 mt-2">
+                                        <button onClick={() => handleRetry(index)} className="hover-scale">🔁</button>
+                                        {msg.role === 'user' && <button onClick={() => handleEdit(index)} className="hover-scale">✏️</button>}
+                                        <button onClick={() => handleShare(msg.content)} className="hover-scale">📤</button>
+                                        <button onClick={() => handleCopy(msg.content)} className="hover-scale">📋</button>
+                                    </div>
+                                </div>
+                            ))}
+                            <div ref={messagesEndRef} />
+                        </div>
+
+                        {/* Input Area */}
+                        <div className="glass-effect p-4 fixed bottom-0 w-full">
+                            <div className="flex items-center">
+                                <input
+                                    type="text"
+                                    value={input}
+                                    onChange={(e) => setInput(e.target.value)}
+                                    className="flex-1 glass-effect p-2 rounded-l-lg focus:outline-none"
+                                    placeholder="Введите ваше сообщение..."
+                                />
+                                <button onClick={handleSubmit} className="glass-effect p-2 rounded-r-lg hover-scale">Отправить</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Settings Panel */}
+                    {isSettingsOpen && (
+                        <div className="fixed inset-0 glass-effect p-4 flex items-center justify-center z-30">
+                            <div className="bg-gray-800/80 p-6 rounded-lg glass-effect">
+                                <h2 className="text-lg font-semibold mb-4">Настройки</h2>
+                                <div className="mb-4">
+                                    <label>Тема</label>
+                                    <select value={theme} onChange={(e) => setTheme(e.target.value)} className="w-full p-2 glass-effect">
+                                        <option value="system">Системная</option>
+                                        <option value="light">Светлая</option>
+                                        <option value="dark">Тёмная</option>
+                                    </select>
+                                </div>
+                                <div className="mb-4">
+                                    <label>Температура: {temperature}</label>
+                                    <input
+                                        type="range"
+                                        min="0"
+                                        max="1"
+                                        step="0.1"
+                                        value={temperature}
+                                        onChange={(e) => setTemperature(e.target.value)}
+                                        className="w-full"
+                                    />
+                                </div>
+                                <button onClick={() => setIsSettingsOpen(false)} className="glass-effect p-2 rounded hover-scale">Закрыть</button>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Toast Container */}
+                    <div className="fixed bottom-4 right-4 space-y-2">
+                        {toasts.map(toast => (
+                            <Toast key={toast.id} message={toast.message} onClose={() => setToasts(toasts.filter(t => t.id !== toast.id))} />
+                        ))}
+                    </div>
+                </div>
+            );
+        };
+
+        // Render App
+        ReactDOM.render(<App />, document.getElementById('root'));
+    </script>
+</body>
+</html>
